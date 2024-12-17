@@ -158,9 +158,10 @@ impl Chip<'_> {
     }
 
     pub fn run(&mut self) -> Result<(), io::Error> {
+        let mut without_reset = 0;
         while self.keep_running {
             while self.keep_running {
-                if poll(Duration::from_millis(1))? {
+                if poll(Duration::from_millis(5))? {
                     match event::read() {
                         Ok(Event::Key(e)) => match e.code {
                             KeyCode::Char('q') => self.keep_running = false,
@@ -176,17 +177,26 @@ impl Chip<'_> {
                 }
             }
 
-            self.update();
-            if self.sound_reg > 1 {
+            for _ in 0..16 {
+                self.update();
+            }
+
+            if self.sound_reg > 0 {
                 self.sound_reg -= 1;
             }
 
-            if self.delay_reg > 1 {
+            if self.delay_reg > 0 {
                 self.delay_reg -= 1;
             }
 
-            self.reset_keyboard();
-            sleep(Duration::from_millis(1));
+            if without_reset == 15 {
+                self.reset_keyboard();
+                without_reset = 0;
+            }
+
+            without_reset += 1;
+
+            sleep(Duration::from_millis(17));
         }
         Ok(())
     }
@@ -586,7 +596,7 @@ impl Chip<'_> {
     // Store registers V0 through Vx in memory starting at location I.
     // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
     fn write_regs_to_mem(&mut self, x: u8) {
-        for i in 0..x {
+        for i in 0..=x {
             self.ram[self.i_reg + i as usize] = self.regs[i as usize]
         }
     }
@@ -595,7 +605,7 @@ impl Chip<'_> {
     // Read registers V0 through Vx from memory starting at location I.
     // The interpreter reads values from memory starting at location I into registers V0 through Vx.
     fn read_regs_from_mem(&mut self, x: u8) {
-        for i in 0..x {
+        for i in 0..=x {
             self.regs[i as usize] = self.ram[self.i_reg + i as usize];
         }
     }
