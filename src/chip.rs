@@ -2,11 +2,18 @@ const RAM_SIZE: usize = 4096;
 const STACK_SIZE: usize = 16;
 const GENERAL_REGISTERS: usize = 16;
 const PROGRAM_START: usize = 512;
+const KEY_NUMBERS: usize = 16;
 
 use std::{
-    io::{BufReader, Read},
+    io::{self, BufReader, Read, Stdout},
     path::Path,
+    thread::sleep,
+    time::Duration,
 };
+
+use crossterm::event::{self, poll, Event, KeyCode};
+use rand::Rng;
+use tui::{backend::CrosstermBackend, Terminal};
 
 use crate::display::{self, Display};
 
@@ -40,7 +47,8 @@ impl Instruction {
     }
 }
 
-pub struct Chip {
+pub struct Chip<'a> {
+    keep_running: bool,
     ram: [u8; RAM_SIZE],
     stack: [u16; STACK_SIZE],
     regs: [u8; GENERAL_REGISTERS],
@@ -51,10 +59,11 @@ pub struct Chip {
     // original u16 and u8 registers, usize to simplify indexing
     pc_reg: usize,
     sp_reg: usize,
-    display: Display,
+    display: Display<'a>,
+    keyboard: [bool; KEY_NUMBERS],
 }
 
-impl std::fmt::Debug for Chip {
+impl std::fmt::Debug for Chip<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Registers: ")?;
         writeln!(
@@ -78,7 +87,7 @@ impl std::fmt::Debug for Chip {
         for (i, b) in self.ram.iter().enumerate() {
             if i % 32 == 0 {
                 writeln!(f)?;
-                write!(f, "{:04X} | ", i)?;
+                write!(f, "{} | ", i)?;
             }
             write!(f, "{:02X} ", b)?;
         }
@@ -86,9 +95,10 @@ impl std::fmt::Debug for Chip {
     }
 }
 
-impl Chip {
-    pub fn new() -> Chip {
-        Chip {
+impl Chip<'_> {
+    pub fn new(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Chip {
+        let mut chip = Chip {
+            keep_running: true,
             ram: [0; RAM_SIZE],
             stack: [0; STACK_SIZE],
             regs: [0; GENERAL_REGISTERS],
@@ -97,8 +107,36 @@ impl Chip {
             sound_reg: 0,
             pc_reg: PROGRAM_START,
             sp_reg: 0,
-            display: Display::new(),
+            display: Display::new(terminal),
+            keyboard: [false; KEY_NUMBERS],
+        };
+
+        let sprites = vec![
+            vec![0xF0, 0x90, 0x90, 0x90, 0xF0],
+            vec![0x20, 0x60, 0x20, 0x20, 0x70],
+            vec![0xF0, 0x10, 0xF0, 0x80, 0xF0],
+            vec![0xF0, 0x10, 0xF0, 0x10, 0xF0],
+            vec![0x90, 0x90, 0xF0, 0x10, 0x10],
+            vec![0xF0, 0x80, 0xF0, 0x10, 0xF0],
+            vec![0xF0, 0x80, 0xF0, 0x90, 0xF0],
+            vec![0xF0, 0x10, 0x20, 0x40, 0x40],
+            vec![0xF0, 0x90, 0xF0, 0x90, 0xF0],
+            vec![0xF0, 0x90, 0xF0, 0x10, 0xF0],
+            vec![0xF0, 0x90, 0xF0, 0x90, 0x90],
+            vec![0xE0, 0x90, 0xE0, 0x90, 0xE0],
+            vec![0xF0, 0x80, 0x80, 0x80, 0xF0],
+            vec![0xE0, 0x90, 0x90, 0x90, 0xE0],
+            vec![0xF0, 0x80, 0xF0, 0x80, 0xF0],
+            vec![0xF0, 0x80, 0xF0, 0x80, 0x80],
+        ];
+
+        for x in 0..sprites.len() {
+            for (i, b) in sprites[x].iter().enumerate() {
+                chip.ram[5 * x + i] = *b as u8
+            }
         }
+
+        chip
     }
 
     pub fn load(&mut self, rom_path: &Path) -> Result<String, String> {
@@ -119,12 +157,101 @@ impl Chip {
         Ok(String::from("ROM Loaded on memory"))
     }
 
+    pub fn run(&mut self) -> Result<(), io::Error> {
+        while self.keep_running {
+            while self.keep_running {
+                if poll(Duration::from_millis(1))? {
+                    match event::read() {
+                        Ok(Event::Key(e)) => match e.code {
+                            KeyCode::Char('q') => self.keep_running = false,
+                            KeyCode::Char(c) => {
+                                self.key_pressed(c);
+                            }
+                            _ => println!("Other"),
+                        },
+                        _ => continue,
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            self.update();
+            if self.sound_reg > 1 {
+                self.sound_reg -= 1;
+            }
+
+            if self.delay_reg > 1 {
+                self.delay_reg -= 1;
+            }
+
+            self.reset_keyboard();
+            sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+
+    pub fn key_pressed(&mut self, c: char) -> Option<u8> {
+        let pressed = match c {
+            '2' => Some(0x1),
+            '3' => Some(0x2),
+            '4' => Some(0x3),
+            '5' => Some(0xC),
+            'w' => Some(0x4),
+            'e' => Some(0x5),
+            'r' => Some(0x6),
+            't' => Some(0xD),
+            's' => Some(0x7),
+            'd' => Some(0x8),
+            'f' => Some(0x9),
+            'g' => Some(0xE),
+            'x' => Some(0xA),
+            'c' => Some(0x0),
+            'v' => Some(0xB),
+            'b' => Some(0xF),
+            _ => None,
+        };
+        if let Some(c) = pressed {
+            self.keyboard[c as usize] = true;
+        }
+
+        pressed
+    }
+
+    fn block_read(&mut self) -> u8 {
+        loop {
+            match event::read() {
+                Ok(Event::Key(e)) => match e.code {
+                    KeyCode::Char('q') => {
+                        self.keep_running = false;
+                        break;
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(key) = self.key_pressed(c) {
+                            return key;
+                        }
+                    }
+                    _ => println!("Other pressed"),
+                },
+                _ => continue,
+            }
+        }
+        0
+    }
+
+    fn reset_keyboard(&mut self) {
+        for i in 0..self.keyboard.len() {
+            self.keyboard[i] = false;
+        }
+    }
+
     pub fn update(&mut self) {
         let raw_instruction =
             ((self.ram[self.pc_reg] as u16) << 8) | (self.ram[self.pc_reg + 1] as u16);
         self.pc_reg += 2;
 
         let instruction = Instruction::new(raw_instruction);
+        // println!("{:?}", instruction.parts);
         match instruction.parts {
             (0x0, 0x0, 0xE, 0x0) => self.cls(),
             (0x0, 0x0, 0xE, 0xE) => self.ret(),
@@ -160,7 +287,7 @@ impl Chip {
             (0xF, _, 0x3, 0x3) => self.decimal_reg_to_memory(instruction.x),
             (0xF, _, 0x5, 0x5) => self.write_regs_to_mem(instruction.x),
             (0xF, _, 0x6, 0x5) => self.read_regs_from_mem(instruction.x),
-            _ => println!("Not implemented, parts: {:?}", instruction.parts),
+            _ => {}
         }
     }
 
@@ -171,312 +298,305 @@ impl Chip {
 
     // 00E0 - CLS
     // Clear the display.
-    fn cls(&self) {
-        println!("[Cls] ");
+    fn cls(&mut self) {
+        self.display.clear();
+        self.display.render();
     }
 
     // 00EE - RET
     // Return from a subroutine.
     // The interpreter sets the program counter to the address at the top of the stack, then subtracts 1 from the stack pointer.
-    fn ret(&self) {
-        println!("[Return] ");
+    fn ret(&mut self) {
+        self.sp_reg -= 1;
+        self.pc_reg = self.stack[self.sp_reg as usize] as usize
     }
 
     // 1nnn - JP addr
     // Jump to location nnn.
     // The interpreter sets the program counter to nnn.
-    fn jump(&self, addr: u16) {
-        print!("[Jump] ");
-        println!("Jumping to {}", addr);
+    fn jump(&mut self, addr: u16) {
+        self.pc_reg = addr as usize
     }
 
     // 2nnn - CALL addr
     // Call subroutine at nnn.
     // The interpreter increments the stack pointer, then puts the current PC on the top of the stack. The PC is then set to nnn.
-    fn call(&self, addr: u16) {
-        print!("[Call] ");
-        println!("Calling to {}", addr);
+    fn call(&mut self, addr: u16) {
+        self.stack[self.sp_reg as usize] = self.pc_reg as u16;
+        self.sp_reg += 1;
+        self.pc_reg = addr as usize;
     }
 
     // 3xkk - SE Vx, byte
     // Skip next instruction if Vx = kk.
     // The interpreter compares register Vx to kk, and if they are equal, increments the program counter by 2.
-    fn skip_if_equal_byte(&self, x: u8, kk: u8) {
-        print!("[Skip equal byte] ");
+    fn skip_if_equal_byte(&mut self, x: u8, kk: u8) {
         if self.regs[x as usize] == kk {
-            println!("Skipping because register {:02X} == {:02X}", x, kk);
-        } else {
-            println!("Not skipped because register {:02X} != {:02X}", x, kk);
+            self.pc_reg += 2;
         }
     }
 
     // 4xkk - SNE Vx, byte
     // Skip next instruction if Vx != kk.
     // The interpreter compares register Vx to kk, and if they are not equal, increments the program counter by 2.
-    fn skip_if_not_equal_byte(&self, x: u8, kk: u8) {
-        print!("[Skip not equal byte] ");
+    fn skip_if_not_equal_byte(&mut self, x: u8, kk: u8) {
         if self.regs[x as usize] != kk {
-            println!("Skipping because register {:02X} != {:02X}", x, kk);
-        } else {
-            println!("Not skipped because register {:02X} == {:02X}", x, kk);
+            self.pc_reg += 2;
         }
     }
 
     // 5xy0 - SE Vx, Vy
     // Skip next instruction if Vx = Vy.
     // The interpreter compares register Vx to register Vy, and if they are equal, increments the program counter by 2.
-    fn skip_if_equal_registers(&self, x: u8, y: u8) {
-        print!("[Skip equal registers] ");
+    fn skip_if_equal_registers(&mut self, x: u8, y: u8) {
         if self.regs[x as usize] == self.regs[y as usize] {
-            println!("Skipping because register {:02X} == register {:02X}", x, y);
-        } else {
-            println!(
-                "Not skipped because register {:02X} != register {:02X}",
-                x, y
-            );
+            self.pc_reg += 2;
         }
     }
 
     // 6xkk - LD Vx, byte
     // Set Vx = kk.
     // The interpreter puts the value kk into register Vx.
-    fn load_byte_to_reg(&self, x: u8, kk: u8) {
-        print!("[Load byte to reg] ");
-        println!("Loading {:02X} into register {:02X}", kk, x);
+    fn load_byte_to_reg(&mut self, x: u8, kk: u8) {
+        self.regs[x as usize] = kk;
     }
 
     // 7xkk - ADD Vx, byte
     // Set Vx = Vx + kk.
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
-    fn add_byte_to_reg(&self, x: u8, kk: u8) {
-        print!("[Add value to reg] ");
-        println!("Adding {:02X} to register {:02X}", kk, x);
+    fn add_byte_to_reg(&mut self, x: u8, kk: u8) {
+        self.regs[x as usize] += kk;
     }
 
     // 8xy0 - LD Vx, Vy
     // Set Vx = Vy.
     // Stores the value of register Vy in register Vx.
-    fn load_reg_to_reg(&self, x: u8, y: u8) {
-        print!("[Load reg to reg] ");
-        println!(
-            "Loading value from register {:02X} to register {:02X}",
-            x, y
-        );
+    fn load_reg_to_reg(&mut self, x: u8, y: u8) {
+        self.regs[x as usize] = self.regs[y as usize]
     }
 
     // 8xy1 - OR Vx, Vy
     // Set Vx = Vx OR Vy.
     // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx. A bitwise OR compares the corrseponding bits from two values, and if either bit is 1, then the same bit in the result is also 1. Otherwise, it is 0.
-    fn or_reg_reg(&self, x: u8, y: u8) {
-        print!("[Or reg to reg] ");
-        println!("Or between register {:02X} and register {:02X}", x, y);
+    fn or_reg_reg(&mut self, x: u8, y: u8) {
+        self.regs[x as usize] |= self.regs[y as usize];
     }
 
     // 8xy2 - AND Vx, Vy
     // Set Vx = Vx AND Vy.
     // Performs a bitwise AND on the values of Vx and Vy, then stores the result in Vx. A bitwise AND compares the corrseponding bits from two values, and if both bits are 1, then the same bit in the result is also 1. Otherwise, it is 0.
-    fn and_reg_reg(&self, x: u8, y: u8) {
-        print!("[And reg to reg] ");
-        println!("And between register {:02X} and register {:02X}", x, y);
+    fn and_reg_reg(&mut self, x: u8, y: u8) {
+        self.regs[x as usize] &= self.regs[y as usize];
     }
 
     // 8xy3 - XOR Vx, Vy
     // Set Vx = Vx XOR Vy.
     // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. An exclusive OR compares the corrseponding bits from two values, and if the bits are not both the same, then the corresponding bit in the result is set to 1. Otherwise, it is 0.
-    fn xor_reg_reg(&self, x: u8, y: u8) {
-        print!("[Xor reg to reg] ");
-        println!("Xor between register {:02X} and register {:02X}", x, y);
+    fn xor_reg_reg(&mut self, x: u8, y: u8) {
+        self.regs[x as usize] ^= self.regs[y as usize];
     }
 
     // 8xy4 - ADD Vx, Vy
     // Set Vx = Vx + Vy, set VF = carry.
     // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and stored in Vx.
-    fn add_reg_reg(&self, x: u8, y: u8) {
-        print!("[Add reg to reg] ");
-        println!("Add between register {:02X} and register {:02X}", x, y);
+    fn add_reg_reg(&mut self, x: u8, y: u8) {
+        let i = self.regs[x as usize] as u16;
+        let j = self.regs[y as usize] as u16;
+        let res = i + j;
+        if res > 255 {
+            self.regs[0xF] = 1
+        } else {
+            self.regs[0xF] = 0
+        }
+        self.regs[x as usize] = (res & 0xFF) as u8;
     }
 
     // 8xy5 - SUB Vx, Vy
     // Set Vx = Vx - Vy, set VF = NOT borrow.
     // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results stored in Vx.
-    fn sub_reg_reg(&self, x: u8, y: u8) {
-        print!("[Sub reg to reg] ");
-        println!("Sub between register {:02X} and register {:02X}", x, y);
+    fn sub_reg_reg(&mut self, x: u8, y: u8) {
+        let i = self.regs[x as usize];
+        let j = self.regs[y as usize];
+        if i > j {
+            self.regs[0xF] = 1;
+        } else {
+            self.regs[0xF] = 0;
+        }
+        self.regs[x as usize] = i - j;
     }
 
     // 8xy6 - SHR Vx {, Vy}
     // Set Vx = Vx SHR 1.
     // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0. Then Vx is divided by 2.
-    fn shift_right(&self, x: u8) {
-        print!("[Shift right reg] ");
-        println!("Shift right register {:02X}", x);
+    fn shift_right(&mut self, x: u8) {
+        self.regs[x as usize] = self.regs[x as usize] >> 1
     }
 
     // 8xy7 - SUBN Vx, Vy
     // Set Vx = Vy - Vx, set VF = NOT borrow.
     // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results stored in Vx.
-    fn subn_reg_reg(&self, x: u8, y: u8) {
-        print!("[Subn (not borrow) reg to reg] ");
-        println!("Sub between register {:02X} and register {:02X}", x, y);
+    fn subn_reg_reg(&mut self, x: u8, y: u8) {
+        let i = self.regs[x as usize];
+        let j = self.regs[y as usize];
+        if j > i {
+            self.regs[0xF] = 1;
+        } else {
+            self.regs[0xF] = 0;
+        }
+        self.regs[x as usize] = i - j;
     }
 
     // 8xyE - SHL Vx {, Vy}
     // Set Vx = Vx SHL 1.
     // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
-    fn shift_left(&self, x: u8) {
-        print!("[Shift left reg] ");
-        println!("Shift left register {:02X}", x);
+    fn shift_left(&mut self, x: u8) {
+        if self.regs[x as usize] >> 7 == 0x1 {
+            self.regs[0xF] = 1;
+        } else {
+            self.regs[0xF] = 0;
+        }
+        self.regs[x as usize] = self.regs[x as usize] << 1;
     }
 
     // 9xy0 - SNE Vx, Vy
     // Skip next instruction if Vx != Vy.
     // The values of Vx and Vy are compared, and if they are not equal, the program counter is increased by 2.
-    fn skip_if_not_equal_registers(&self, x: u8, y: u8) {
-        print!("[Skip not equal registers] ");
+    fn skip_if_not_equal_registers(&mut self, x: u8, y: u8) {
         if self.regs[x as usize] != self.regs[y as usize] {
-            println!("Skipping because register {:02X} != register {:02X}", x, y);
-        } else {
-            println!(
-                "Not skipped because register {:02X} == register {:02X}",
-                x, y
-            );
+            self.pc_reg += 2;
         }
     }
 
     // Annn - LD I, addr
     // Set I = nnn.
     // The value of register I is set to nnn.
-    fn load_to_i_reg(&self, addr: u16) {
-        print!("[Load to I reg] ");
-        println!("Load {:04X} to I", addr);
+    fn load_to_i_reg(&mut self, addr: u16) {
+        self.i_reg = addr as usize;
     }
 
     // Bnnn - JP V0, addr
     // Jump to location nnn + V0.
     // The program counter is set to nnn plus the value of V0.
-    fn jump_with_offset(&self, addr: u16) {
-        print!("[Jump with offset] ");
-        println!(
-            "Jump to {:04X} + {:02x} = {:04X}",
-            addr,
-            self.regs[0],
-            addr + self.regs[0] as u16
-        );
+    fn jump_with_offset(&mut self, addr: u16) {
+        self.pc_reg = addr as usize + self.regs[0] as usize;
     }
 
     // Cxkk - RND Vx, byte
     // Set Vx = random byte AND kk.
     // The interpreter generates a random number from 0 to 255, which is then ANDed with the value kk. The results are stored in Vx. See instruction 8xy2 for more information on AND.
-    fn rand(&self, x: u8, kk: u8) {
-        print!("[Random]");
-        println!("Random number and {:02X} to register {:02X}", kk, x);
+    fn rand(&mut self, x: u8, kk: u8) {
+        let mut rng = rand::thread_rng();
+        let random_u8: u8 = rng.gen_range(0..=255);
+        self.regs[x as usize] = kk & random_u8;
     }
 
     // Dxyn - DRW Vx, Vy, nibble
     // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     // The interpreter reads n bytes from memory, starting at the address stored in I. These bytes are then displayed as sprites on screen at coordinates (Vx, Vy). Sprites are XORed onto the existing screen. If this causes any pixels to be erased, VF is set to 1, otherwise it is set to 0. If the sprite is positioned so part of it is outside the coordinates of the display, it wraps around to the opposite side of the screen. See instruction 8xy3 for more information on XOR, and section 2.4, Display, for more information on the Chip-8 screen and sprites.
-    fn draw(&self, x: u8, y: u8, n: u8) {
-        print!("[Draw]");
-        println!(
-            "Draw {} lines to ([register {:02X}], [register {:02X}])",
-            n, x, y
-        );
+    fn draw(&mut self, x: u8, y: u8, n: u8) {
+        let mut collision = false;
+        for i in 0..n {
+            if self.display.draw(
+                self.regs[x as usize],
+                self.regs[y as usize] + i,
+                self.ram[self.i_reg + i as usize],
+            ) {
+                collision = true;
+            }
+        }
+
+        if collision {
+            self.regs[0xF] = 0x1
+        } else {
+            self.regs[0xF] = 0x0
+        }
+        self.display.render();
     }
 
     // Ex9E - SKP Vx
     // Skip next instruction if key with the value of Vx is pressed.
     // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the down position, PC is increased by 2.
-    fn skip_if_key(&self, x: u8) {
-        println!("[Skip if key]");
+    fn skip_if_key(&mut self, x: u8) {
+        if self.keyboard[self.regs[x as usize] as usize] {
+            self.pc_reg += 2;
+        }
     }
 
     // ExA1 - SKNP Vx
     // Skip next instruction if key with the value of Vx is not pressed.
     // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the up position, PC is increased by 2.
-    fn skip_if_not_key(&self, x: u8) {
-        println!("[Skip if not key]");
+    fn skip_if_not_key(&mut self, x: u8) {
+        if !self.keyboard[self.regs[x as usize] as usize] {
+            self.pc_reg += 2;
+        }
     }
 
     // Fx07 - LD Vx, DT
     // Set Vx = delay timer value.
     // The value of DT is placed into Vx.
-    fn set_reg_from_delay_timer(&self, x: u8) {
-        println!("[Set reg from delay timer]");
+    fn set_reg_from_delay_timer(&mut self, x: u8) {
+        self.regs[x as usize] = self.delay_reg
     }
 
     // Fx0A - LD Vx, K
     // Wait for a key press, store the value of the key in Vx.
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
-    fn wait_key(&self, x: u8) {
-        println!("[Waiting for key being pressed]");
+    fn wait_key(&mut self, x: u8) {
+        self.regs[x as usize] = self.block_read();
     }
 
     // Fx15 - LD DT, Vx
     // Set delay timer = Vx.
     // DT is set equal to the value of Vx.
-    fn set_delay_timer_from_reg(&self, x: u8) {
-        println!("[Set delay timer from reg]");
+    fn set_delay_timer_from_reg(&mut self, x: u8) {
+        self.delay_reg = self.regs[x as usize];
     }
 
     // Fx18 - LD ST, Vx
     // Set sound timer = Vx.
     // ST is set equal to the value of Vx.
-    fn set_sound_timer_from_reg(&self, x: u8) {
-        println!("[Set sound timer from reg]");
+    fn set_sound_timer_from_reg(&mut self, x: u8) {
+        self.sound_reg = self.regs[x as usize];
     }
 
     // Fx1E - ADD I, Vx
     // Set I = I + Vx.
     // The values of I and Vx are added, and the results are stored in I.
-    fn add_to_i(&self, x: u8) {
-        println!("[Adding to I register]");
+    fn add_to_i(&mut self, x: u8) {
+        self.i_reg += self.regs[x as usize] as usize;
     }
 
     // Fx29 - LD F, Vx
     // Set I = location of sprite for digit Vx.
     // The value of I is set to the location for the hexadecimal sprite corresponding to the value of Vx. See section 2.4, Display, for more information on the Chip-8 hexadecimal font.
-    fn i_to_digit_sprite(&self, x: u8) {
-        println!("[Loading I register with location of digit sprite]");
+    fn i_to_digit_sprite(&mut self, x: u8) {
+        self.i_reg = (5 * self.regs[x as usize]) as usize;
     }
 
     // Fx33 - LD B, Vx
     // Store BCD representation of Vx in memory locations I, I+1, and I+2.
     // The interpreter takes the decimal value of Vx, and places the hundreds digit in memory at location in I, the tens digit at location I+1, and the ones digit at location I+2.
-    fn decimal_reg_to_memory(&self, x: u8) {
-        println!("[Storing BDC representation of reg to memory pointed by I]");
+    fn decimal_reg_to_memory(&mut self, x: u8) {
+        self.ram[self.i_reg] = self.regs[x as usize] / 100;
+        self.ram[self.i_reg + 1] = (self.regs[x as usize] / 10) % 10;
+        self.ram[self.i_reg + 2] = self.regs[x as usize] % 10;
     }
 
     // Fx55 - LD [I], Vx
     // Store registers V0 through Vx in memory starting at location I.
     // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
-    fn write_regs_to_mem(&self, x: u8) {
-        println!("[Storing registers on memory]");
+    fn write_regs_to_mem(&mut self, x: u8) {
+        for i in 0..x {
+            self.ram[self.i_reg + i as usize] = self.regs[i as usize]
+        }
     }
 
     // Fx65 - LD Vx, [I]
     // Read registers V0 through Vx from memory starting at location I.
     // The interpreter reads values from memory starting at location I into registers V0 through Vx.
-    fn read_regs_from_mem(&self, x: u8) {
-        println!("[Reading registers from memory]");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_chip() {
-        let chip = Chip::new();
-
-        assert_eq!(chip.i_reg, 0);
-    }
-
-    #[test]
-    fn test_instruction() {
-        let raw_inst = 0x0E27;
-        let instruction = Instruction::new(raw_inst);
-
-        assert_eq!(instruction.parts, (0x0, 0xE, 0x2, 0x7));
+    fn read_regs_from_mem(&mut self, x: u8) {
+        for i in 0..x {
+            self.regs[i as usize] = self.ram[self.i_reg + i as usize];
+        }
     }
 }
