@@ -3,19 +3,20 @@ const STACK_SIZE: usize = 16;
 const GENERAL_REGISTERS: usize = 16;
 const PROGRAM_START: usize = 512;
 const KEY_NUMBERS: usize = 16;
+const DEFAULT_RATE: u64 = 60;
+const INSTRUCTIONS_PER_CYCLE: usize = 16;
 
 use std::{
-    io::{self, BufReader, Read, Stdout},
+    io::{self, BufReader, Read},
     path::Path,
     thread::sleep,
     time::Duration,
 };
 
-use crossterm::event::{self, poll, Event, KeyCode};
 use rand::Rng;
-use tui::{backend::CrosstermBackend, Terminal};
+use sdl2::{event::Event, keyboard::Keycode, render::WindowCanvas, EventPump};
 
-use crate::display::{self, Display};
+use crate::display::Display;
 
 #[derive(Debug)]
 struct Instruction {
@@ -48,6 +49,7 @@ impl Instruction {
 }
 
 pub struct Chip<'a> {
+    rate: u64,
     keep_running: bool,
     ram: [u8; RAM_SIZE],
     stack: [u16; STACK_SIZE],
@@ -60,6 +62,7 @@ pub struct Chip<'a> {
     pc_reg: usize,
     sp_reg: usize,
     display: Display<'a>,
+    event_queue: &'a mut EventPump,
     keyboard: [bool; KEY_NUMBERS],
 }
 
@@ -96,8 +99,9 @@ impl std::fmt::Debug for Chip<'_> {
 }
 
 impl Chip<'_> {
-    pub fn new(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Chip {
+    pub fn new<'a>(canvas: &'a mut WindowCanvas, event_queue: &'a mut EventPump) -> Chip<'a> {
         let mut chip = Chip {
+            rate: DEFAULT_RATE,
             keep_running: true,
             ram: [0; RAM_SIZE],
             stack: [0; STACK_SIZE],
@@ -107,27 +111,28 @@ impl Chip<'_> {
             sound_reg: 0,
             pc_reg: PROGRAM_START,
             sp_reg: 0,
-            display: Display::new(terminal),
+            display: Display::new(canvas),
+            event_queue,
             keyboard: [false; KEY_NUMBERS],
         };
 
         let sprites = vec![
-            vec![0xF0, 0x90, 0x90, 0x90, 0xF0],
-            vec![0x20, 0x60, 0x20, 0x20, 0x70],
-            vec![0xF0, 0x10, 0xF0, 0x80, 0xF0],
-            vec![0xF0, 0x10, 0xF0, 0x10, 0xF0],
-            vec![0x90, 0x90, 0xF0, 0x10, 0x10],
-            vec![0xF0, 0x80, 0xF0, 0x10, 0xF0],
-            vec![0xF0, 0x80, 0xF0, 0x90, 0xF0],
-            vec![0xF0, 0x10, 0x20, 0x40, 0x40],
-            vec![0xF0, 0x90, 0xF0, 0x90, 0xF0],
-            vec![0xF0, 0x90, 0xF0, 0x10, 0xF0],
-            vec![0xF0, 0x90, 0xF0, 0x90, 0x90],
-            vec![0xE0, 0x90, 0xE0, 0x90, 0xE0],
-            vec![0xF0, 0x80, 0x80, 0x80, 0xF0],
-            vec![0xE0, 0x90, 0x90, 0x90, 0xE0],
-            vec![0xF0, 0x80, 0xF0, 0x80, 0xF0],
-            vec![0xF0, 0x80, 0xF0, 0x80, 0x80],
+            vec![0xF0, 0x90, 0x90, 0x90, 0xF0], // 0
+            vec![0x20, 0x60, 0x20, 0x20, 0x70], // 1
+            vec![0xF0, 0x10, 0xF0, 0x80, 0xF0], // 2
+            vec![0xF0, 0x10, 0xF0, 0x10, 0xF0], // 3
+            vec![0x90, 0x90, 0xF0, 0x10, 0x10], // 4
+            vec![0xF0, 0x80, 0xF0, 0x10, 0xF0], // 5
+            vec![0xF0, 0x80, 0xF0, 0x90, 0xF0], // 6
+            vec![0xF0, 0x10, 0x20, 0x40, 0x40], // 7
+            vec![0xF0, 0x90, 0xF0, 0x90, 0xF0], // 8
+            vec![0xF0, 0x90, 0xF0, 0x10, 0xF0], // 9
+            vec![0xF0, 0x90, 0xF0, 0x90, 0x90], // A
+            vec![0xE0, 0x90, 0xE0, 0x90, 0xE0], // B
+            vec![0xF0, 0x80, 0x80, 0x80, 0xF0], // C
+            vec![0xE0, 0x90, 0x90, 0x90, 0xE0], // D
+            vec![0xF0, 0x80, 0xF0, 0x80, 0xF0], // E
+            vec![0xF0, 0x80, 0xF0, 0x80, 0x80], // F
         ];
 
         for x in 0..sprites.len() {
@@ -158,26 +163,10 @@ impl Chip<'_> {
     }
 
     pub fn run(&mut self) -> Result<(), io::Error> {
-        let mut without_reset = 0;
         while self.keep_running {
-            while self.keep_running {
-                if poll(Duration::from_millis(5))? {
-                    match event::read() {
-                        Ok(Event::Key(e)) => match e.code {
-                            KeyCode::Char('q') => self.keep_running = false,
-                            KeyCode::Char(c) => {
-                                self.key_pressed(c);
-                            }
-                            _ => println!("Other"),
-                        },
-                        _ => continue,
-                    }
-                } else {
-                    break;
-                }
-            }
+            self.handle_events();
 
-            for _ in 0..16 {
+            for _ in 0..INSTRUCTIONS_PER_CYCLE {
                 self.update();
             }
 
@@ -189,38 +178,67 @@ impl Chip<'_> {
                 self.delay_reg -= 1;
             }
 
-            if without_reset == 15 {
-                self.reset_keyboard();
-                without_reset = 0;
-            }
-
-            without_reset += 1;
-
-            sleep(Duration::from_millis(17));
+            self.display.render();
+            sleep(Duration::from_millis(1000 / self.rate));
         }
         Ok(())
     }
 
-    pub fn key_pressed(&mut self, c: char) -> Option<u8> {
-        let pressed = match c {
-            '2' => Some(0x1),
-            '3' => Some(0x2),
-            '4' => Some(0x3),
-            '5' => Some(0xC),
-            'w' => Some(0x4),
-            'e' => Some(0x5),
-            'r' => Some(0x6),
-            't' => Some(0xD),
-            's' => Some(0x7),
-            'd' => Some(0x8),
-            'f' => Some(0x9),
-            'g' => Some(0xE),
-            'x' => Some(0xA),
-            'c' => Some(0x0),
-            'v' => Some(0xB),
-            'b' => Some(0xF),
+    fn handle_events(&mut self) {
+        while let Some(event) = self.event_queue.poll_event() {
+            match event {
+                Event::Quit { .. } => self.keep_running = false,
+                Event::KeyDown {
+                    keycode: Some(Keycode::Up),
+                    ..
+                } => {
+                    self.rate += 10;
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Down),
+                    ..
+                } => {
+                    self.rate -= 10;
+                }
+                Event::KeyDown {
+                    keycode: Some(k), ..
+                } => {
+                    self.key_pressed(k);
+                }
+                Event::KeyUp {
+                    keycode: Some(k), ..
+                } => {
+                    self.key_released(k);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn keycode_to_u8(&self, k: Keycode) -> Option<u8> {
+        match k {
+            Keycode::Num2 => Some(0x1),
+            Keycode::Num3 => Some(0x2),
+            Keycode::Num4 => Some(0x3),
+            Keycode::Num5 => Some(0xC),
+            Keycode::W => Some(0x4),
+            Keycode::E => Some(0x5),
+            Keycode::R => Some(0x6),
+            Keycode::T => Some(0xD),
+            Keycode::S => Some(0x7),
+            Keycode::D => Some(0x8),
+            Keycode::F => Some(0x9),
+            Keycode::G => Some(0xE),
+            Keycode::X => Some(0xA),
+            Keycode::C => Some(0x0),
+            Keycode::V => Some(0xB),
+            Keycode::B => Some(0xF),
             _ => None,
-        };
+        }
+    }
+
+    pub fn key_pressed(&mut self, k: Keycode) -> Option<u8> {
+        let pressed = self.keycode_to_u8(k);
         if let Some(c) = pressed {
             self.keyboard[c as usize] = true;
         }
@@ -228,31 +246,32 @@ impl Chip<'_> {
         pressed
     }
 
+    pub fn key_released(&mut self, k: Keycode) {
+        let released = self.keycode_to_u8(k);
+        if let Some(c) = released {
+            self.keyboard[c as usize] = false;
+        }
+    }
+
     fn block_read(&mut self) -> u8 {
         loop {
-            match event::read() {
-                Ok(Event::Key(e)) => match e.code {
-                    KeyCode::Char('q') => {
-                        self.keep_running = false;
-                        break;
-                    }
-                    KeyCode::Char(c) => {
-                        if let Some(key) = self.key_pressed(c) {
-                            return key;
-                        }
-                    }
-                    _ => println!("Other pressed"),
-                },
-                _ => continue,
+            let event = self.event_queue.wait_event();
+            match event {
+                Event::Quit { .. } => {
+                    self.keep_running = false;
+                    break;
+                }
+                Event::KeyDown {
+                    keycode: Some(k), ..
+                } => {
+                    if let Some(key) = self.key_pressed(k) {
+                        return key;
+                    };
+                }
+                _ => {}
             }
         }
         0
-    }
-
-    fn reset_keyboard(&mut self) {
-        for i in 0..self.keyboard.len() {
-            self.keyboard[i] = false;
-        }
     }
 
     pub fn update(&mut self) {
@@ -310,7 +329,6 @@ impl Chip<'_> {
     // Clear the display.
     fn cls(&mut self) {
         self.display.clear();
-        self.display.render();
     }
 
     // 00EE - RET
@@ -520,7 +538,6 @@ impl Chip<'_> {
         } else {
             self.regs[0xF] = 0x0
         }
-        self.display.render();
     }
 
     // Ex9E - SKP Vx
@@ -599,6 +616,8 @@ impl Chip<'_> {
         for i in 0..=x {
             self.ram[self.i_reg + i as usize] = self.regs[i as usize]
         }
+
+        self.i_reg += x as usize + 1;
     }
 
     // Fx65 - LD Vx, [I]
