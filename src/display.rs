@@ -70,7 +70,8 @@ impl Display<'_> {
     pub fn draw(&mut self, x: u8, y: u8, sprite: u8) -> bool {
         let mut collision = false;
         for i in 0..8 {
-            if sprite >> (7 - i) & 0x1 == 0x1 {
+            // if sprite >> (7 - i) & 0x1 == 0x1 {
+            if sprite.checked_shr(7 - i).unwrap_or(0) & 0x1 == 0x1 {
                 let dx = (x as usize + i as usize) % DISPLAY_WIDTH;
                 let dy = y as usize % DISPLAY_HEIGHT;
                 if self.pixels[dy][dx] {

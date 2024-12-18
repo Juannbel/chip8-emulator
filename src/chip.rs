@@ -2,10 +2,12 @@ const RAM_SIZE: usize = 4096;
 const STACK_SIZE: usize = 16;
 const GENERAL_REGISTERS: usize = 16;
 const PROGRAM_START: usize = 512;
-const KEY_NUMBERS: usize = 16;
 const DEFAULT_RATE: u64 = 60;
 const INSTRUCTIONS_PER_CYCLE: usize = 16;
+const BYTES_PER_SPRITE: u8 = 5;
 
+use sdl2::render::WindowCanvas;
+use sdl2::EventPump;
 use std::{
     io::{self, BufReader, Read},
     path::Path,
@@ -14,9 +16,8 @@ use std::{
 };
 
 use rand::Rng;
-use sdl2::{event::Event, keyboard::Keycode, render::WindowCanvas, EventPump};
 
-use crate::display::Display;
+use crate::{display::Display, keypad::Keypad};
 
 #[derive(Debug)]
 struct Instruction {
@@ -50,6 +51,7 @@ impl Instruction {
 
 pub struct Chip<'a> {
     rate: u64,
+    rng: rand::rngs::ThreadRng,
     keep_running: bool,
     ram: [u8; RAM_SIZE],
     stack: [u16; STACK_SIZE],
@@ -62,8 +64,7 @@ pub struct Chip<'a> {
     pc_reg: usize,
     sp_reg: usize,
     display: Display<'a>,
-    event_queue: &'a mut EventPump,
-    keyboard: [bool; KEY_NUMBERS],
+    keypad: Keypad<'a>,
 }
 
 impl std::fmt::Debug for Chip<'_> {
@@ -103,6 +104,7 @@ impl Chip<'_> {
         let mut chip = Chip {
             rate: DEFAULT_RATE,
             keep_running: true,
+            rng: rand::thread_rng(),
             ram: [0; RAM_SIZE],
             stack: [0; STACK_SIZE],
             regs: [0; GENERAL_REGISTERS],
@@ -112,8 +114,7 @@ impl Chip<'_> {
             pc_reg: PROGRAM_START,
             sp_reg: 0,
             display: Display::new(canvas),
-            event_queue,
-            keyboard: [false; KEY_NUMBERS],
+            keypad: Keypad::new(event_queue),
         };
 
         let sprites = vec![
@@ -137,7 +138,7 @@ impl Chip<'_> {
 
         for x in 0..sprites.len() {
             for (i, b) in sprites[x].iter().enumerate() {
-                chip.ram[5 * x + i] = *b as u8
+                chip.ram[BYTES_PER_SPRITE as usize * x + i] = *b as u8
             }
         }
 
@@ -164,7 +165,7 @@ impl Chip<'_> {
 
     pub fn run(&mut self) -> Result<(), io::Error> {
         while self.keep_running {
-            self.handle_events();
+            self.keep_running = self.keypad.handle_events();
 
             for _ in 0..INSTRUCTIONS_PER_CYCLE {
                 self.update();
@@ -184,103 +185,12 @@ impl Chip<'_> {
         Ok(())
     }
 
-    fn handle_events(&mut self) {
-        while let Some(event) = self.event_queue.poll_event() {
-            match event {
-                Event::Quit { .. } => self.keep_running = false,
-                Event::KeyDown {
-                    keycode: Some(Keycode::Up),
-                    ..
-                } => {
-                    self.rate += 10;
-                }
-                Event::KeyDown {
-                    keycode: Some(Keycode::Down),
-                    ..
-                } => {
-                    self.rate -= 10;
-                }
-                Event::KeyDown {
-                    keycode: Some(k), ..
-                } => {
-                    self.key_pressed(k);
-                }
-                Event::KeyUp {
-                    keycode: Some(k), ..
-                } => {
-                    self.key_released(k);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn keycode_to_u8(&self, k: Keycode) -> Option<u8> {
-        match k {
-            Keycode::Num2 => Some(0x1),
-            Keycode::Num3 => Some(0x2),
-            Keycode::Num4 => Some(0x3),
-            Keycode::Num5 => Some(0xC),
-            Keycode::W => Some(0x4),
-            Keycode::E => Some(0x5),
-            Keycode::R => Some(0x6),
-            Keycode::T => Some(0xD),
-            Keycode::S => Some(0x7),
-            Keycode::D => Some(0x8),
-            Keycode::F => Some(0x9),
-            Keycode::G => Some(0xE),
-            Keycode::X => Some(0xA),
-            Keycode::C => Some(0x0),
-            Keycode::V => Some(0xB),
-            Keycode::B => Some(0xF),
-            _ => None,
-        }
-    }
-
-    pub fn key_pressed(&mut self, k: Keycode) -> Option<u8> {
-        let pressed = self.keycode_to_u8(k);
-        if let Some(c) = pressed {
-            self.keyboard[c as usize] = true;
-        }
-
-        pressed
-    }
-
-    pub fn key_released(&mut self, k: Keycode) {
-        let released = self.keycode_to_u8(k);
-        if let Some(c) = released {
-            self.keyboard[c as usize] = false;
-        }
-    }
-
-    fn block_read(&mut self) -> u8 {
-        loop {
-            let event = self.event_queue.wait_event();
-            match event {
-                Event::Quit { .. } => {
-                    self.keep_running = false;
-                    break;
-                }
-                Event::KeyDown {
-                    keycode: Some(k), ..
-                } => {
-                    if let Some(key) = self.key_pressed(k) {
-                        return key;
-                    };
-                }
-                _ => {}
-            }
-        }
-        0
-    }
-
     pub fn update(&mut self) {
         let raw_instruction =
             ((self.ram[self.pc_reg] as u16) << 8) | (self.ram[self.pc_reg + 1] as u16);
         self.pc_reg += 2;
 
         let instruction = Instruction::new(raw_instruction);
-        // println!("{:?}", instruction.parts);
         match instruction.parts {
             (0x0, 0x0, 0xE, 0x0) => self.cls(),
             (0x0, 0x0, 0xE, 0xE) => self.ret(),
@@ -322,13 +232,13 @@ impl Chip<'_> {
 
     // 0nnn - SYS addr
     // Jump to a machine code routine at nnn.
-
     // This instruction is only used on the old computers on which Chip-8 was originally implemented. It is ignored by modern interpreters.
 
     // 00E0 - CLS
     // Clear the display.
     fn cls(&mut self) {
         self.display.clear();
+        self.display.render();
     }
 
     // 00EE - RET
@@ -393,7 +303,7 @@ impl Chip<'_> {
     // Set Vx = Vx + kk.
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
     fn add_byte_to_reg(&mut self, x: u8, kk: u8) {
-        self.regs[x as usize] += kk;
+        self.regs[x as usize] = self.regs[x as usize].wrapping_add(kk);
     }
 
     // 8xy0 - LD Vx, Vy
@@ -408,6 +318,7 @@ impl Chip<'_> {
     // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx. A bitwise OR compares the corrseponding bits from two values, and if either bit is 1, then the same bit in the result is also 1. Otherwise, it is 0.
     fn or_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] |= self.regs[y as usize];
+        self.regs[0xF] = 0;
     }
 
     // 8xy2 - AND Vx, Vy
@@ -415,6 +326,7 @@ impl Chip<'_> {
     // Performs a bitwise AND on the values of Vx and Vy, then stores the result in Vx. A bitwise AND compares the corrseponding bits from two values, and if both bits are 1, then the same bit in the result is also 1. Otherwise, it is 0.
     fn and_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] &= self.regs[y as usize];
+        self.regs[0xF] = 0;
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -422,68 +334,52 @@ impl Chip<'_> {
     // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. An exclusive OR compares the corrseponding bits from two values, and if the bits are not both the same, then the corresponding bit in the result is set to 1. Otherwise, it is 0.
     fn xor_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] ^= self.regs[y as usize];
+        self.regs[0xF] = 0;
     }
 
     // 8xy4 - ADD Vx, Vy
     // Set Vx = Vx + Vy, set VF = carry.
     // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and stored in Vx.
     fn add_reg_reg(&mut self, x: u8, y: u8) {
-        let i = self.regs[x as usize] as u16;
-        let j = self.regs[y as usize] as u16;
-        let res = i + j;
-        if res > 255 {
-            self.regs[0xF] = 1
-        } else {
-            self.regs[0xF] = 0
-        }
-        self.regs[x as usize] = (res & 0xFF) as u8;
+        let (res, overflow) = self.regs[x as usize].overflowing_add(self.regs[y as usize]);
+        self.regs[x as usize] = res;
+        self.regs[0xF] = if overflow { 1 } else { 0 };
     }
 
     // 8xy5 - SUB Vx, Vy
     // Set Vx = Vx - Vy, set VF = NOT borrow.
     // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results stored in Vx.
     fn sub_reg_reg(&mut self, x: u8, y: u8) {
-        let i = self.regs[x as usize];
-        let j = self.regs[y as usize];
-        if i > j {
-            self.regs[0xF] = 1;
-        } else {
-            self.regs[0xF] = 0;
-        }
-        self.regs[x as usize] = i - j;
+        let (res, overflow) = self.regs[x as usize].overflowing_sub(self.regs[y as usize]);
+        self.regs[x as usize] = res;
+        self.regs[0xF] = if overflow { 0 } else { 1 };
     }
 
     // 8xy6 - SHR Vx {, Vy}
     // Set Vx = Vx SHR 1.
     // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0. Then Vx is divided by 2.
     fn shift_right(&mut self, x: u8) {
-        self.regs[x as usize] = self.regs[x as usize] >> 1
+        let lsb = self.regs[x as usize] & 0x1;
+        self.regs[x as usize] = self.regs[x as usize].checked_shr(1).unwrap_or(0);
+        self.regs[0xF] = lsb;
     }
 
     // 8xy7 - SUBN Vx, Vy
     // Set Vx = Vy - Vx, set VF = NOT borrow.
     // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results stored in Vx.
     fn subn_reg_reg(&mut self, x: u8, y: u8) {
-        let i = self.regs[x as usize];
-        let j = self.regs[y as usize];
-        if j > i {
-            self.regs[0xF] = 1;
-        } else {
-            self.regs[0xF] = 0;
-        }
-        self.regs[x as usize] = i - j;
+        let (res, overflow) = self.regs[y as usize].overflowing_sub(self.regs[x as usize]);
+        self.regs[x as usize] = res;
+        self.regs[0xF] = if overflow { 0 } else { 1 };
     }
 
     // 8xyE - SHL Vx {, Vy}
     // Set Vx = Vx SHL 1.
     // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
     fn shift_left(&mut self, x: u8) {
-        if self.regs[x as usize] >> 7 == 0x1 {
-            self.regs[0xF] = 1;
-        } else {
-            self.regs[0xF] = 0;
-        }
-        self.regs[x as usize] = self.regs[x as usize] << 1;
+        let msb = self.regs[x as usize].checked_shr(7).unwrap_or(0);
+        self.regs[x as usize] = self.regs[x as usize].checked_shl(1).unwrap_or(0);
+        self.regs[0xF] = msb;
     }
 
     // 9xy0 - SNE Vx, Vy
@@ -513,38 +409,33 @@ impl Chip<'_> {
     // Set Vx = random byte AND kk.
     // The interpreter generates a random number from 0 to 255, which is then ANDed with the value kk. The results are stored in Vx. See instruction 8xy2 for more information on AND.
     fn rand(&mut self, x: u8, kk: u8) {
-        let mut rng = rand::thread_rng();
-        let random_u8: u8 = rng.gen_range(0..=255);
-        self.regs[x as usize] = kk & random_u8;
+        self.regs[x as usize] = self.rng.gen::<u8>() & kk;
     }
 
     // Dxyn - DRW Vx, Vy, nibble
     // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     // The interpreter reads n bytes from memory, starting at the address stored in I. These bytes are then displayed as sprites on screen at coordinates (Vx, Vy). Sprites are XORed onto the existing screen. If this causes any pixels to be erased, VF is set to 1, otherwise it is set to 0. If the sprite is positioned so part of it is outside the coordinates of the display, it wraps around to the opposite side of the screen. See instruction 8xy3 for more information on XOR, and section 2.4, Display, for more information on the Chip-8 screen and sprites.
     fn draw(&mut self, x: u8, y: u8, n: u8) {
-        let mut collision = false;
+        let mut collision = 0;
         for i in 0..n {
             if self.display.draw(
                 self.regs[x as usize],
                 self.regs[y as usize] + i,
                 self.ram[self.i_reg + i as usize],
             ) {
-                collision = true;
+                collision = 1;
             }
         }
 
-        if collision {
-            self.regs[0xF] = 0x1
-        } else {
-            self.regs[0xF] = 0x0
-        }
+        self.regs[0xF] = collision;
+        self.display.render();
     }
 
     // Ex9E - SKP Vx
     // Skip next instruction if key with the value of Vx is pressed.
     // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the down position, PC is increased by 2.
     fn skip_if_key(&mut self, x: u8) {
-        if self.keyboard[self.regs[x as usize] as usize] {
+        if self.keypad.is_pressed(self.regs[x as usize]) {
             self.pc_reg += 2;
         }
     }
@@ -553,7 +444,7 @@ impl Chip<'_> {
     // Skip next instruction if key with the value of Vx is not pressed.
     // Checks the keyboard, and if the key corresponding to the value of Vx is currently in the up position, PC is increased by 2.
     fn skip_if_not_key(&mut self, x: u8) {
-        if !self.keyboard[self.regs[x as usize] as usize] {
+        if !self.keypad.is_pressed(self.regs[x as usize]) {
             self.pc_reg += 2;
         }
     }
@@ -569,7 +460,12 @@ impl Chip<'_> {
     // Wait for a key press, store the value of the key in Vx.
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
     fn wait_key(&mut self, x: u8) {
-        self.regs[x as usize] = self.block_read();
+        if let Some(key) = self.keypad.block_read() {
+            self.regs[x as usize] = key;
+        } else {
+            // if None, Quit event was triggered
+            self.keep_running = false;
+        }
     }
 
     // Fx15 - LD DT, Vx
@@ -597,16 +493,17 @@ impl Chip<'_> {
     // Set I = location of sprite for digit Vx.
     // The value of I is set to the location for the hexadecimal sprite corresponding to the value of Vx. See section 2.4, Display, for more information on the Chip-8 hexadecimal font.
     fn i_to_digit_sprite(&mut self, x: u8) {
-        self.i_reg = (5 * self.regs[x as usize]) as usize;
+        self.i_reg = BYTES_PER_SPRITE as usize * self.regs[x as usize] as usize;
     }
 
     // Fx33 - LD B, Vx
     // Store BCD representation of Vx in memory locations I, I+1, and I+2.
     // The interpreter takes the decimal value of Vx, and places the hundreds digit in memory at location in I, the tens digit at location I+1, and the ones digit at location I+2.
     fn decimal_reg_to_memory(&mut self, x: u8) {
-        self.ram[self.i_reg] = self.regs[x as usize] / 100;
-        self.ram[self.i_reg + 1] = (self.regs[x as usize] / 10) % 10;
-        self.ram[self.i_reg + 2] = self.regs[x as usize] % 10;
+        let value = self.regs[x as usize];
+        self.ram[self.i_reg] = value / 100;
+        self.ram[self.i_reg + 1] = (value / 10) % 10;
+        self.ram[self.i_reg + 2] = value % 10;
     }
 
     // Fx55 - LD [I], Vx
@@ -627,5 +524,7 @@ impl Chip<'_> {
         for i in 0..=x {
             self.regs[i as usize] = self.ram[self.i_reg + i as usize];
         }
+
+        self.i_reg += x as usize + 1;
     }
 }
