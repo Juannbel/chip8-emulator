@@ -6,8 +6,8 @@ const DEFAULT_RATE: u64 = 60;
 const INSTRUCTIONS_PER_CYCLE: usize = 16;
 const BYTES_PER_SPRITE: u8 = 5;
 
-use sdl2::render::WindowCanvas;
 use sdl2::EventPump;
+use sdl2::{render::WindowCanvas, AudioSubsystem};
 use std::{
     io::{self, BufReader, Read},
     path::Path,
@@ -17,7 +17,7 @@ use std::{
 
 use rand::Rng;
 
-use crate::{display::Display, keypad::Keypad};
+use crate::{display::Display, keypad::Keypad, speaker::Speaker};
 
 #[derive(Debug)]
 struct Instruction {
@@ -65,6 +65,7 @@ pub struct Chip<'a> {
     sp_reg: usize,
     display: Display<'a>,
     keypad: Keypad<'a>,
+    speaker: Speaker,
 }
 
 impl std::fmt::Debug for Chip<'_> {
@@ -100,7 +101,11 @@ impl std::fmt::Debug for Chip<'_> {
 }
 
 impl Chip<'_> {
-    pub fn new<'a>(canvas: &'a mut WindowCanvas, event_queue: &'a mut EventPump) -> Chip<'a> {
+    pub fn new<'a>(
+        canvas: &'a mut WindowCanvas,
+        event_queue: &'a mut EventPump,
+        audio_subsystem: &'a mut AudioSubsystem,
+    ) -> Chip<'a> {
         let mut chip = Chip {
             rate: DEFAULT_RATE,
             keep_running: true,
@@ -115,6 +120,7 @@ impl Chip<'_> {
             sp_reg: 0,
             display: Display::new(canvas),
             keypad: Keypad::new(event_queue),
+            speaker: Speaker::new(audio_subsystem),
         };
 
         let sprites = vec![
@@ -167,16 +173,19 @@ impl Chip<'_> {
         while self.keep_running {
             self.keep_running = self.keypad.handle_events();
 
-            for _ in 0..INSTRUCTIONS_PER_CYCLE {
-                self.update();
-            }
-
             if self.sound_reg > 0 {
+                self.speaker.start();
                 self.sound_reg -= 1;
+            } else {
+                self.speaker.stop();
             }
 
             if self.delay_reg > 0 {
                 self.delay_reg -= 1;
+            }
+
+            for _ in 0..INSTRUCTIONS_PER_CYCLE {
+                self.update();
             }
 
             self.display.render();
@@ -460,7 +469,7 @@ impl Chip<'_> {
     // Wait for a key press, store the value of the key in Vx.
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
     fn wait_key(&mut self, x: u8) {
-        if let Some(key) = self.keypad.block_read() {
+        if let Some(key) = self.keypad.block_read(&mut self.display) {
             self.regs[x as usize] = key;
         } else {
             // if None, Quit event was triggered

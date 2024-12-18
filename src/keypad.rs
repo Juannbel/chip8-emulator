@@ -1,5 +1,7 @@
 use sdl2::{event::Event, keyboard::Keycode, EventPump};
 
+use crate::display::Display;
+
 const KEY_NUMBERS: usize = 16;
 
 pub struct Keypad<'a> {
@@ -58,7 +60,7 @@ impl Keypad<'_> {
         }
     }
 
-    pub fn block_read(&mut self) -> Option<u8> {
+    pub fn block_read(&mut self, display: &mut Display) -> Option<u8> {
         loop {
             let event = self.event_queue.wait_event();
             match event {
@@ -71,6 +73,9 @@ impl Keypad<'_> {
                     if let Some(key) = self.key_pressed(k) {
                         return Some(key);
                     };
+                }
+                Event::Window { .. } => {
+                    display.render();
                 }
                 _ => {}
             }

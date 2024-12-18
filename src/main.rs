@@ -12,6 +12,7 @@ fn main() -> Result<(), io::Error> {
 
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
+    let mut audio_subsystem = sdl_context.audio().unwrap();
 
     let window = video_subsystem
         .window("Chip8 Emulator", 800, 600)
@@ -23,7 +24,7 @@ fn main() -> Result<(), io::Error> {
     let mut canvas: WindowCanvas = window.into_canvas().build().unwrap();
     let mut event_queue = sdl_context.event_pump().unwrap();
 
-    let mut chip = Chip::new(&mut canvas, &mut event_queue);
+    let mut chip = Chip::new(&mut canvas, &mut event_queue, &mut audio_subsystem);
     if let Err(msg) = chip.load(rom) {
         println!("Error loading the rom: {}", msg);
         return Ok(());
