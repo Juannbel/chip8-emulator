@@ -62,6 +62,11 @@ Once the prerequisites are installed, follow these steps:
 </td></tr>
 </table>
 
+`→`. IPF += 1 (instructions per frame)
+`←`. IPF -= 1
+`↑`. RATE += 1
+`↓`. RATE -= 1
+
 ## References
 
 - **Cowgod's Chip-8 Technical Reference v1.0**: This was the primary resource used to implement the emulator. You can access it [here](http://devernay.free.fr/hacks/chip8/C8TECH10.HTM).

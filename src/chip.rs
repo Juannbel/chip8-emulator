@@ -49,6 +49,7 @@ impl Instruction {
 
 pub struct Chip {
     rate: u64,
+    ipf: u64,
     waiting_key: bool,
     rng: rand::rngs::ThreadRng,
     keep_running: bool,
@@ -105,7 +106,7 @@ impl Chip {
     const GENERAL_REGISTERS: usize = 16;
     const PROGRAM_START: usize = 512;
     const DEFAULT_RATE: u64 = 60;
-    const INSTRUCTIONS_PER_CYCLE: usize = 12;
+    const DEFAULT_IPF: u64 = 12;
     const BYTES_PER_SPRITE: u8 = 5;
 
     pub fn new(
@@ -115,6 +116,7 @@ impl Chip {
     ) -> Chip {
         let mut chip = Chip {
             rate: Chip::DEFAULT_RATE,
+            ipf: Chip::DEFAULT_IPF,
             waiting_key: false,
             keep_running: true,
             rng: rand::thread_rng(),
@@ -176,7 +178,7 @@ impl Chip {
     pub fn run(&mut self) -> Result<(), io::Error> {
         while self.keep_running {
             if !self.waiting_key {
-                self.keep_running = self.keypad.handle_events();
+                self.keep_running = self.keypad.handle_events(&mut self.rate, &mut self.ipf);
             }
 
             if self.sound_reg > 0 {
@@ -190,7 +192,7 @@ impl Chip {
                 self.delay_reg -= 1;
             }
 
-            for _ in 0..Chip::INSTRUCTIONS_PER_CYCLE {
+            for _ in 0..self.ipf {
                 self.update();
             }
 
@@ -481,7 +483,10 @@ impl Chip {
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
     fn wait_key(&mut self, x: u8) {
         self.waiting_key = true;
-        if let Some(key) = self.keypad.block_read(&mut self.keep_running) {
+        if let Some(key) =
+            self.keypad
+                .block_read(&mut self.keep_running, &mut self.rate, &mut self.ipf)
+        {
             self.regs[x as usize] = key as u8;
             self.waiting_key = false;
         } else {
