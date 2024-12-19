@@ -4,7 +4,7 @@
 
 This is a Chip8 emulator written in Rust, capable of running most Chip8 games.
 
-![Other roms](./images/other_roms.png)
+![Other games](./images/other_games.png)
 
 ## 🚀 Usage
 
