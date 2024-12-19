@@ -51,6 +51,7 @@ impl Instruction {
 
 pub struct Chip<'a> {
     rate: u64,
+    waiting_key: bool,
     rng: rand::rngs::ThreadRng,
     keep_running: bool,
     ram: [u8; RAM_SIZE],
@@ -108,6 +109,7 @@ impl Chip<'_> {
     ) -> Chip<'a> {
         let mut chip = Chip {
             rate: DEFAULT_RATE,
+            waiting_key: false,
             keep_running: true,
             rng: rand::thread_rng(),
             ram: [0; RAM_SIZE],
@@ -171,7 +173,9 @@ impl Chip<'_> {
 
     pub fn run(&mut self) -> Result<(), io::Error> {
         while self.keep_running {
-            self.keep_running = self.keypad.handle_events();
+            if !self.waiting_key {
+                self.keep_running = self.keypad.handle_events();
+            }
 
             if self.sound_reg > 0 {
                 self.speaker.start();
@@ -197,7 +201,6 @@ impl Chip<'_> {
     pub fn update(&mut self) {
         let raw_instruction =
             ((self.ram[self.pc_reg] as u16) << 8) | (self.ram[self.pc_reg + 1] as u16);
-        self.pc_reg += 2;
 
         let instruction = Instruction::new(raw_instruction);
         match instruction.parts {
@@ -248,6 +251,7 @@ impl Chip<'_> {
     fn cls(&mut self) {
         self.display.clear();
         self.display.render();
+        self.pc_reg += 2;
     }
 
     // 00EE - RET
@@ -255,7 +259,7 @@ impl Chip<'_> {
     // The interpreter sets the program counter to the address at the top of the stack, then subtracts 1 from the stack pointer.
     fn ret(&mut self) {
         self.sp_reg -= 1;
-        self.pc_reg = self.stack[self.sp_reg as usize] as usize
+        self.pc_reg = self.stack[self.sp_reg as usize] as usize;
     }
 
     // 1nnn - JP addr
@@ -269,6 +273,7 @@ impl Chip<'_> {
     // Call subroutine at nnn.
     // The interpreter increments the stack pointer, then puts the current PC on the top of the stack. The PC is then set to nnn.
     fn call(&mut self, addr: u16) {
+        self.pc_reg += 2;
         self.stack[self.sp_reg as usize] = self.pc_reg as u16;
         self.sp_reg += 1;
         self.pc_reg = addr as usize;
@@ -281,6 +286,7 @@ impl Chip<'_> {
         if self.regs[x as usize] == kk {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // 4xkk - SNE Vx, byte
@@ -290,6 +296,7 @@ impl Chip<'_> {
         if self.regs[x as usize] != kk {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // 5xy0 - SE Vx, Vy
@@ -299,6 +306,7 @@ impl Chip<'_> {
         if self.regs[x as usize] == self.regs[y as usize] {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // 6xkk - LD Vx, byte
@@ -306,6 +314,7 @@ impl Chip<'_> {
     // The interpreter puts the value kk into register Vx.
     fn load_byte_to_reg(&mut self, x: u8, kk: u8) {
         self.regs[x as usize] = kk;
+        self.pc_reg += 2;
     }
 
     // 7xkk - ADD Vx, byte
@@ -313,13 +322,15 @@ impl Chip<'_> {
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
     fn add_byte_to_reg(&mut self, x: u8, kk: u8) {
         self.regs[x as usize] = self.regs[x as usize].wrapping_add(kk);
+        self.pc_reg += 2;
     }
 
     // 8xy0 - LD Vx, Vy
     // Set Vx = Vy.
     // Stores the value of register Vy in register Vx.
     fn load_reg_to_reg(&mut self, x: u8, y: u8) {
-        self.regs[x as usize] = self.regs[y as usize]
+        self.regs[x as usize] = self.regs[y as usize];
+        self.pc_reg += 2;
     }
 
     // 8xy1 - OR Vx, Vy
@@ -328,6 +339,7 @@ impl Chip<'_> {
     fn or_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] |= self.regs[y as usize];
         self.regs[0xF] = 0;
+        self.pc_reg += 2;
     }
 
     // 8xy2 - AND Vx, Vy
@@ -336,6 +348,7 @@ impl Chip<'_> {
     fn and_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] &= self.regs[y as usize];
         self.regs[0xF] = 0;
+        self.pc_reg += 2;
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -344,6 +357,7 @@ impl Chip<'_> {
     fn xor_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] ^= self.regs[y as usize];
         self.regs[0xF] = 0;
+        self.pc_reg += 2;
     }
 
     // 8xy4 - ADD Vx, Vy
@@ -353,6 +367,7 @@ impl Chip<'_> {
         let (res, overflow) = self.regs[x as usize].overflowing_add(self.regs[y as usize]);
         self.regs[x as usize] = res;
         self.regs[0xF] = if overflow { 1 } else { 0 };
+        self.pc_reg += 2;
     }
 
     // 8xy5 - SUB Vx, Vy
@@ -362,6 +377,7 @@ impl Chip<'_> {
         let (res, overflow) = self.regs[x as usize].overflowing_sub(self.regs[y as usize]);
         self.regs[x as usize] = res;
         self.regs[0xF] = if overflow { 0 } else { 1 };
+        self.pc_reg += 2;
     }
 
     // 8xy6 - SHR Vx {, Vy}
@@ -371,6 +387,7 @@ impl Chip<'_> {
         let lsb = self.regs[x as usize] & 0x1;
         self.regs[x as usize] = self.regs[x as usize].checked_shr(1).unwrap_or(0);
         self.regs[0xF] = lsb;
+        self.pc_reg += 2;
     }
 
     // 8xy7 - SUBN Vx, Vy
@@ -380,6 +397,7 @@ impl Chip<'_> {
         let (res, overflow) = self.regs[y as usize].overflowing_sub(self.regs[x as usize]);
         self.regs[x as usize] = res;
         self.regs[0xF] = if overflow { 0 } else { 1 };
+        self.pc_reg += 2;
     }
 
     // 8xyE - SHL Vx {, Vy}
@@ -389,6 +407,7 @@ impl Chip<'_> {
         let msb = self.regs[x as usize].checked_shr(7).unwrap_or(0);
         self.regs[x as usize] = self.regs[x as usize].checked_shl(1).unwrap_or(0);
         self.regs[0xF] = msb;
+        self.pc_reg += 2;
     }
 
     // 9xy0 - SNE Vx, Vy
@@ -398,6 +417,7 @@ impl Chip<'_> {
         if self.regs[x as usize] != self.regs[y as usize] {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // Annn - LD I, addr
@@ -405,6 +425,7 @@ impl Chip<'_> {
     // The value of register I is set to nnn.
     fn load_to_i_reg(&mut self, addr: u16) {
         self.i_reg = addr as usize;
+        self.pc_reg += 2;
     }
 
     // Bnnn - JP V0, addr
@@ -419,6 +440,7 @@ impl Chip<'_> {
     // The interpreter generates a random number from 0 to 255, which is then ANDed with the value kk. The results are stored in Vx. See instruction 8xy2 for more information on AND.
     fn rand(&mut self, x: u8, kk: u8) {
         self.regs[x as usize] = self.rng.gen::<u8>() & kk;
+        self.pc_reg += 2;
     }
 
     // Dxyn - DRW Vx, Vy, nibble
@@ -438,6 +460,7 @@ impl Chip<'_> {
 
         self.regs[0xF] = collision;
         self.display.render();
+        self.pc_reg += 2;
     }
 
     // Ex9E - SKP Vx
@@ -447,6 +470,7 @@ impl Chip<'_> {
         if self.keypad.is_pressed(self.regs[x as usize]) {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // ExA1 - SKNP Vx
@@ -456,24 +480,26 @@ impl Chip<'_> {
         if !self.keypad.is_pressed(self.regs[x as usize]) {
             self.pc_reg += 2;
         }
+        self.pc_reg += 2;
     }
 
     // Fx07 - LD Vx, DT
     // Set Vx = delay timer value.
     // The value of DT is placed into Vx.
     fn set_reg_from_delay_timer(&mut self, x: u8) {
-        self.regs[x as usize] = self.delay_reg
+        self.regs[x as usize] = self.delay_reg;
+        self.pc_reg += 2;
     }
 
     // Fx0A - LD Vx, K
     // Wait for a key press, store the value of the key in Vx.
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
     fn wait_key(&mut self, x: u8) {
-        if let Some(key) = self.keypad.block_read(&mut self.display) {
-            self.regs[x as usize] = key;
-        } else {
-            // if None, Quit event was triggered
-            self.keep_running = false;
+        self.waiting_key = true;
+        if let Some(key) = self.keypad.block_read(&mut self.keep_running) {
+            self.regs[x as usize] = key as u8;
+            self.waiting_key = false;
+            self.pc_reg += 2;
         }
     }
 
@@ -482,6 +508,7 @@ impl Chip<'_> {
     // DT is set equal to the value of Vx.
     fn set_delay_timer_from_reg(&mut self, x: u8) {
         self.delay_reg = self.regs[x as usize];
+        self.pc_reg += 2;
     }
 
     // Fx18 - LD ST, Vx
@@ -489,6 +516,7 @@ impl Chip<'_> {
     // ST is set equal to the value of Vx.
     fn set_sound_timer_from_reg(&mut self, x: u8) {
         self.sound_reg = self.regs[x as usize];
+        self.pc_reg += 2;
     }
 
     // Fx1E - ADD I, Vx
@@ -496,6 +524,7 @@ impl Chip<'_> {
     // The values of I and Vx are added, and the results are stored in I.
     fn add_to_i(&mut self, x: u8) {
         self.i_reg += self.regs[x as usize] as usize;
+        self.pc_reg += 2;
     }
 
     // Fx29 - LD F, Vx
@@ -503,6 +532,7 @@ impl Chip<'_> {
     // The value of I is set to the location for the hexadecimal sprite corresponding to the value of Vx. See section 2.4, Display, for more information on the Chip-8 hexadecimal font.
     fn i_to_digit_sprite(&mut self, x: u8) {
         self.i_reg = BYTES_PER_SPRITE as usize * self.regs[x as usize] as usize;
+        self.pc_reg += 2;
     }
 
     // Fx33 - LD B, Vx
@@ -513,6 +543,7 @@ impl Chip<'_> {
         self.ram[self.i_reg] = value / 100;
         self.ram[self.i_reg + 1] = (value / 10) % 10;
         self.ram[self.i_reg + 2] = value % 10;
+        self.pc_reg += 2;
     }
 
     // Fx55 - LD [I], Vx
@@ -523,7 +554,8 @@ impl Chip<'_> {
             self.ram[self.i_reg + i as usize] = self.regs[i as usize]
         }
 
-        self.i_reg += x as usize + 1;
+        // self.i_reg += x as usize + 1;
+        self.pc_reg += 2;
     }
 
     // Fx65 - LD Vx, [I]
@@ -534,6 +566,47 @@ impl Chip<'_> {
             self.regs[i as usize] = self.ram[self.i_reg + i as usize];
         }
 
-        self.i_reg += x as usize + 1;
+        // self.i_reg += x as usize + 1;
+        self.pc_reg += 2;
+        // let mut tmp = self.i_reg as usize;
+        // for i in 0..=x {
+        //     self.regs[i as usize] = self.ram[tmp];
+        //     tmp += 1;
+        // }
+        // self.pc_reg += 2;
+    }
+}
+
+// testing
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_reg_reg() {
+        let sdl_context = sdl2::init().unwrap();
+        let video_subsystem = sdl_context.video().unwrap();
+        let mut audio_subsystem = sdl_context.audio().unwrap();
+        let window = video_subsystem
+            .window("Chip8 Emulator", 800, 600)
+            .position_centered()
+            .resizable()
+            .build()
+            .unwrap();
+        let mut canvas: WindowCanvas = window.into_canvas().build().unwrap();
+        let mut event_queue = sdl_context.event_pump().unwrap();
+        let mut chip = Chip::new(&mut canvas, &mut event_queue, &mut audio_subsystem);
+
+        chip.load_byte_to_reg(0x3, 0xFF);
+        assert_eq!(chip.regs[0x3], 0xFF);
+
+        chip.load_byte_to_reg(0x1, 0x10);
+        assert_eq!(chip.regs[0x1], 0x10);
+
+        for _ in 0..16 {
+            chip.add_reg_reg(0x1, 0x3);
+        }
+        assert_eq!(chip.regs[0x1], 0x0);
     }
 }

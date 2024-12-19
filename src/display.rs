@@ -2,6 +2,8 @@ use sdl2::render::WindowCanvas;
 
 const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
+const FOREGROUND_COLOR: (u8, u8, u8) = (60, 163, 214);
+const BACKGROUND_COLOR: (u8, u8, u8) = (0, 0, 0);
 
 pub struct Display<'a> {
     canvas: &'a mut WindowCanvas,
@@ -25,8 +27,7 @@ impl Display<'_> {
     }
 
     pub fn render(&mut self) {
-        self.canvas
-            .set_draw_color(sdl2::pixels::Color::RGB(0, 0, 0));
+        self.canvas.set_draw_color(BACKGROUND_COLOR);
         self.canvas.clear();
 
         let window_width = self.canvas.window().size().0 as usize;
@@ -35,11 +36,10 @@ impl Display<'_> {
         let start_x = (window_width - DISPLAY_WIDTH * block) / 2;
         let start_y = (window_height - DISPLAY_HEIGHT * block) / 2;
 
+        self.canvas.set_draw_color(FOREGROUND_COLOR);
         for y in 0..DISPLAY_HEIGHT {
             for x in 0..DISPLAY_WIDTH {
                 if self.pixels[y][x] {
-                    self.canvas
-                        .set_draw_color(sdl2::pixels::Color::RGB(40, 90, 160));
                     self.canvas
                         .fill_rect(sdl2::rect::Rect::new(
                             (start_x + x * block) as i32,
@@ -52,8 +52,6 @@ impl Display<'_> {
             }
         }
 
-        self.canvas
-            .set_draw_color(sdl2::pixels::Color::RGB(40, 90, 160));
         self.canvas
             .draw_rect(sdl2::rect::Rect::new(
                 start_x as i32 - 1,
