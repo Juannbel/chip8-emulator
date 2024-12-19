@@ -30,7 +30,7 @@ pub struct Speaker {
 }
 
 impl Speaker {
-    pub fn new(audio_subsystem: &sdl2::AudioSubsystem) -> Self {
+    pub fn new(audio_subsystem: sdl2::AudioSubsystem) -> Self {
         let desired_spec = AudioSpecDesired {
             freq: Some(44100),
             channels: Some(1),

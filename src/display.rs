@@ -5,13 +5,13 @@ const DISPLAY_HEIGHT: usize = 32;
 const FOREGROUND_COLOR: (u8, u8, u8) = (60, 163, 214);
 const BACKGROUND_COLOR: (u8, u8, u8) = (0, 0, 0);
 
-pub struct Display<'a> {
-    canvas: &'a mut WindowCanvas,
+pub struct Display {
+    canvas: WindowCanvas,
     pixels: [[bool; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
 }
 
-impl Display<'_> {
-    pub fn new(canvas: &mut WindowCanvas) -> Display {
+impl Display {
+    pub fn new(canvas: WindowCanvas) -> Display {
         Display {
             canvas,
             pixels: [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],

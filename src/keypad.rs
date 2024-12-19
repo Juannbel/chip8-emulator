@@ -2,13 +2,13 @@ use sdl2::{event::Event, keyboard::Keycode, EventPump};
 
 const KEY_NUMBERS: usize = 16;
 
-pub struct Keypad<'a> {
-    event_queue: &'a mut EventPump,
+pub struct Keypad {
+    event_queue: EventPump,
     keys: [bool; KEY_NUMBERS],
 }
 
-impl Keypad<'_> {
-    pub fn new<'a>(event_queue: &'a mut EventPump) -> Keypad<'a> {
+impl Keypad {
+    pub fn new<'a>(event_queue: EventPump) -> Keypad {
         Keypad {
             event_queue,
             keys: [false; KEY_NUMBERS],

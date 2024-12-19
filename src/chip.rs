@@ -32,11 +32,17 @@ struct Instruction {
 impl Instruction {
     fn new(instruction: u16) -> Instruction {
         let parts = (
-            ((instruction & 0xF000) >> 12) as u8,
-            ((instruction & 0x0F00) >> 8) as u8,
-            ((instruction & 0x00F0) >> 4) as u8,
+            (instruction & 0xF000).checked_shr(12).unwrap_or(0) as u8,
+            (instruction & 0x0F00).checked_shr(8).unwrap_or(0) as u8,
+            (instruction & 0x00F0).checked_shr(4).unwrap_or(0) as u8,
             (instruction & 0x000F) as u8,
         );
+
+        // nnn or addr - A 12-bit value, the lowest 12 bits of the instruction
+        // n or nibble - A 4-bit value, the lowest 4 bits of the instruction
+        // x - A 4-bit value, the lower 4 bits of the high byte of the instruction
+        // y - A 4-bit value, the upper 4 bits of the low byte of the instruction
+        // kk or byte - An 8-bit value, the lowest 8 bits of the instruction
 
         Instruction {
             parts,
@@ -49,7 +55,7 @@ impl Instruction {
     }
 }
 
-pub struct Chip<'a> {
+pub struct Chip {
     rate: u64,
     waiting_key: bool,
     rng: rand::rngs::ThreadRng,
@@ -64,12 +70,12 @@ pub struct Chip<'a> {
     // original u16 and u8 registers, usize to simplify indexing
     pc_reg: usize,
     sp_reg: usize,
-    display: Display<'a>,
-    keypad: Keypad<'a>,
+    display: Display,
+    keypad: Keypad,
     speaker: Speaker,
 }
 
-impl std::fmt::Debug for Chip<'_> {
+impl std::fmt::Debug for Chip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Registers: ")?;
         writeln!(
@@ -101,12 +107,12 @@ impl std::fmt::Debug for Chip<'_> {
     }
 }
 
-impl Chip<'_> {
-    pub fn new<'a>(
-        canvas: &'a mut WindowCanvas,
-        event_queue: &'a mut EventPump,
-        audio_subsystem: &'a mut AudioSubsystem,
-    ) -> Chip<'a> {
+impl Chip {
+    pub fn new(
+        canvas: WindowCanvas,
+        event_queue: EventPump,
+        audio_subsystem: AudioSubsystem,
+    ) -> Chip {
         let mut chip = Chip {
             rate: DEFAULT_RATE,
             waiting_key: false,
@@ -126,29 +132,25 @@ impl Chip<'_> {
         };
 
         let sprites = vec![
-            vec![0xF0, 0x90, 0x90, 0x90, 0xF0], // 0
-            vec![0x20, 0x60, 0x20, 0x20, 0x70], // 1
-            vec![0xF0, 0x10, 0xF0, 0x80, 0xF0], // 2
-            vec![0xF0, 0x10, 0xF0, 0x10, 0xF0], // 3
-            vec![0x90, 0x90, 0xF0, 0x10, 0x10], // 4
-            vec![0xF0, 0x80, 0xF0, 0x10, 0xF0], // 5
-            vec![0xF0, 0x80, 0xF0, 0x90, 0xF0], // 6
-            vec![0xF0, 0x10, 0x20, 0x40, 0x40], // 7
-            vec![0xF0, 0x90, 0xF0, 0x90, 0xF0], // 8
-            vec![0xF0, 0x90, 0xF0, 0x10, 0xF0], // 9
-            vec![0xF0, 0x90, 0xF0, 0x90, 0x90], // A
-            vec![0xE0, 0x90, 0xE0, 0x90, 0xE0], // B
-            vec![0xF0, 0x80, 0x80, 0x80, 0xF0], // C
-            vec![0xE0, 0x90, 0x90, 0x90, 0xE0], // D
-            vec![0xF0, 0x80, 0xF0, 0x80, 0xF0], // E
-            vec![0xF0, 0x80, 0xF0, 0x80, 0x80], // F
+            0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+            0x20, 0x60, 0x20, 0x20, 0x70, // 1
+            0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+            0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+            0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+            0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+            0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+            0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+            0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+            0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+            0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+            0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+            0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+            0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+            0xF0, 0x80, 0xF0, 0x80, 0x80, // F
         ];
 
-        for x in 0..sprites.len() {
-            for (i, b) in sprites[x].iter().enumerate() {
-                chip.ram[BYTES_PER_SPRITE as usize * x + i] = *b as u8
-            }
-        }
+        chip.ram[0..sprites.len()].copy_from_slice(&sprites);
 
         chip
     }
@@ -554,7 +556,6 @@ impl Chip<'_> {
             self.ram[self.i_reg + i as usize] = self.regs[i as usize]
         }
 
-        // self.i_reg += x as usize + 1;
         self.pc_reg += 2;
     }
 
@@ -566,14 +567,7 @@ impl Chip<'_> {
             self.regs[i as usize] = self.ram[self.i_reg + i as usize];
         }
 
-        // self.i_reg += x as usize + 1;
         self.pc_reg += 2;
-        // let mut tmp = self.i_reg as usize;
-        // for i in 0..=x {
-        //     self.regs[i as usize] = self.ram[tmp];
-        //     tmp += 1;
-        // }
-        // self.pc_reg += 2;
     }
 }
 
@@ -583,30 +577,52 @@ impl Chip<'_> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn add_reg_reg() {
+    fn init_chip() -> Chip {
         let sdl_context = sdl2::init().unwrap();
         let video_subsystem = sdl_context.video().unwrap();
-        let mut audio_subsystem = sdl_context.audio().unwrap();
+        let audio_subsystem = sdl_context.audio().unwrap();
         let window = video_subsystem
             .window("Chip8 Emulator", 800, 600)
             .position_centered()
             .resizable()
             .build()
             .unwrap();
-        let mut canvas: WindowCanvas = window.into_canvas().build().unwrap();
-        let mut event_queue = sdl_context.event_pump().unwrap();
-        let mut chip = Chip::new(&mut canvas, &mut event_queue, &mut audio_subsystem);
+        let canvas: WindowCanvas = window.into_canvas().build().unwrap();
+        let event_queue = sdl_context.event_pump().unwrap();
+        Chip::new(canvas, event_queue, audio_subsystem)
+    }
 
-        chip.load_byte_to_reg(0x3, 0xFF);
-        assert_eq!(chip.regs[0x3], 0xFF);
+    #[test]
+    fn add_byte_to_reg() {
+        let mut chip = init_chip();
+        chip.regs[0x3] = 0x2;
 
-        chip.load_byte_to_reg(0x1, 0x10);
-        assert_eq!(chip.regs[0x1], 0x10);
+        chip.add_byte_to_reg(0x3, 0x1);
+        assert_eq!(chip.regs[0x3], 0x3);
 
-        for _ in 0..16 {
-            chip.add_reg_reg(0x1, 0x3);
-        }
-        assert_eq!(chip.regs[0x1], 0x0);
+        chip.add_byte_to_reg(0x5, 0x9);
+        assert_eq!(chip.regs[0x5], 0x9);
+
+        chip.regs[0x8] = 0xFF;
+        chip.add_byte_to_reg(0x8, 0x1);
+        assert_eq!(chip.regs[0x8], 0x0);
+    }
+
+    #[test]
+    fn add_reg_reg() {
+        let mut chip = init_chip();
+
+        chip.regs[0x0] = 0xFF;
+        chip.regs[0x1] = 0x01;
+
+        chip.add_reg_reg(0x0, 0x1);
+        assert_eq!(chip.regs[0x0], 0x0);
+        assert_eq!(chip.regs[0xF], 1);
+
+        chip.regs[0x2] = 0x09;
+
+        chip.add_reg_reg(0x0, 0x2);
+        assert_eq!(chip.regs[0x0], 0x9);
+        assert_eq!(chip.regs[0xF], 0);
     }
 }
