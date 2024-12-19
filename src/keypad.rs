@@ -1,17 +1,17 @@
 use sdl2::{event::Event, keyboard::Keycode, EventPump};
 
-const KEY_NUMBERS: usize = 16;
-
 pub struct Keypad {
     event_queue: EventPump,
-    keys: [bool; KEY_NUMBERS],
+    keys: [bool; Keypad::KEY_NUMBERS],
 }
 
 impl Keypad {
+    const KEY_NUMBERS: usize = 16;
+
     pub fn new<'a>(event_queue: EventPump) -> Keypad {
         Keypad {
             event_queue,
-            keys: [false; KEY_NUMBERS],
+            keys: [false; Keypad::KEY_NUMBERS],
         }
     }
 
