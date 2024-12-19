@@ -3,7 +3,7 @@ const STACK_SIZE: usize = 16;
 const GENERAL_REGISTERS: usize = 16;
 const PROGRAM_START: usize = 512;
 const DEFAULT_RATE: u64 = 60;
-const INSTRUCTIONS_PER_CYCLE: usize = 16;
+const INSTRUCTIONS_PER_CYCLE: usize = 12;
 const BYTES_PER_SPRITE: u8 = 5;
 
 use sdl2::EventPump;
