@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 rand = "0.8.5"
 sdl2 = "0.37.0"
+sha1 = "0.10.6"
+serde_json = "1.0.133"

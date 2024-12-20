@@ -2,6 +2,8 @@ use std::ops::Shl;
 
 use sdl2::{event::Event, keyboard::Keycode, EventPump};
 
+use crate::config::Config;
+
 pub struct Keypad {
     event_queue: EventPump,
     keys: u16,
@@ -15,7 +17,7 @@ impl Keypad {
         }
     }
 
-    pub fn handle_events(&mut self, rate: &mut u64, ipf: &mut u64) -> bool {
+    pub fn handle_events(&mut self, config: &mut Config) -> bool {
         while let Some(event) = self.event_queue.poll_event() {
             match event {
                 Event::Quit { .. } => {
@@ -24,7 +26,7 @@ impl Keypad {
                 Event::KeyDown {
                     keycode: Some(k), ..
                 } => {
-                    self.key_pressed(k, rate, ipf);
+                    self.key_pressed(k, config);
                 }
                 Event::KeyUp {
                     keycode: Some(k), ..
@@ -42,19 +44,19 @@ impl Keypad {
         self.keys.checked_shr((15 - key) as u32).unwrap_or(0) & 0x1 == 1
     }
 
-    fn key_pressed(&mut self, k: Keycode, rate: &mut u64, ipf: &mut u64) -> Option<u8> {
+    fn key_pressed(&mut self, k: Keycode, config: &mut Config) -> Option<u8> {
         let mut matched = true;
         match k {
-            Keycode::Up => *rate += 1,
+            Keycode::Up => config.rate += 1,
             Keycode::Down => {
-                if *rate > 1 {
-                    *rate -= 1
+                if config.rate > 1 {
+                    config.rate -= 1
                 }
             }
-            Keycode::Right => *ipf += 1,
+            Keycode::Right => config.ipf += 1,
             Keycode::Left => {
-                if *ipf > 1 {
-                    *ipf -= 1
+                if config.ipf > 1 {
+                    config.ipf -= 1
                 }
             }
             _ => {
@@ -63,7 +65,10 @@ impl Keypad {
         }
 
         if matched {
-            println!("Rate: {}Hz. Instructions per frame: {}", *rate, *ipf);
+            println!(
+                "Rate: {}Hz. Instructions per frame: {}",
+                config.rate, config.ipf
+            );
         } else if let Some(c) = self.keycode_to_u8(k) {
             self.keys |= 0x1_u16.shl((15 - c) as u32);
             return Some(c);
@@ -81,12 +86,7 @@ impl Keypad {
         released
     }
 
-    pub fn block_read(
-        &mut self,
-        keep_running: &mut bool,
-        rate: &mut u64,
-        ipf: &mut u64,
-    ) -> Option<u8> {
+    pub fn block_read(&mut self, keep_running: &mut bool, config: &mut Config) -> Option<u8> {
         while let Some(event) = self.event_queue.poll_event() {
             match event {
                 Event::Quit { .. } => {
@@ -96,7 +96,7 @@ impl Keypad {
                 Event::KeyDown {
                     keycode: Some(k), ..
                 } => {
-                    self.key_pressed(k, rate, ipf);
+                    self.key_pressed(k, config);
                 }
                 Event::KeyUp {
                     keycode: Some(k), ..

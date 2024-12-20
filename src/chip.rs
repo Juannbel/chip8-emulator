@@ -9,6 +9,7 @@ use std::{
 
 use rand::Rng;
 
+use crate::config::Config;
 use crate::{display::Display, keypad::Keypad, speaker::Speaker};
 
 #[derive(Debug)]
@@ -48,9 +49,9 @@ impl Instruction {
 }
 
 pub struct Chip {
-    rate: u64,
-    ipf: u64,
+    config: Config,
     waiting_key: bool,
+    drew_on_frame: bool,
     rng: rand::rngs::ThreadRng,
     keep_running: bool,
     ram: [u8; Chip::RAM_SIZE],
@@ -105,8 +106,6 @@ impl Chip {
     const STACK_SIZE: usize = 16;
     const GENERAL_REGISTERS: usize = 16;
     const PROGRAM_START: usize = 512;
-    const DEFAULT_RATE: u64 = 60;
-    const DEFAULT_IPF: u64 = 12;
     const BYTES_PER_SPRITE: u8 = 5;
 
     pub fn new(
@@ -115,9 +114,9 @@ impl Chip {
         audio_subsystem: AudioSubsystem,
     ) -> Chip {
         let mut chip = Chip {
-            rate: Chip::DEFAULT_RATE,
-            ipf: Chip::DEFAULT_IPF,
+            config: Config::new(),
             waiting_key: false,
+            drew_on_frame: false,
             keep_running: true,
             rng: rand::thread_rng(),
             ram: [0; Chip::RAM_SIZE],
@@ -163,14 +162,16 @@ impl Chip {
             return Err(String::from("Error opening ROM file"));
         }
 
-        let file_reader = BufReader::new(file.unwrap());
-
-        for (i, byte) in file_reader.bytes().enumerate() {
-            match byte {
-                Ok(b) => self.ram[Chip::PROGRAM_START + i] = b,
-                Err(_) => return Err(String::from("Error reading ROM file")),
-            }
+        let mut file_reader = BufReader::new(file.unwrap());
+        let mut buffer = Vec::new();
+        if let Err(_) = file_reader.read_to_end(&mut buffer) {
+            return Err(String::from("Error reading ROM file"));
         }
+
+        self.ram[Chip::PROGRAM_START..(Chip::PROGRAM_START + buffer.len())]
+            .copy_from_slice(&buffer);
+
+        self.config.adjust_to_rom(&buffer);
 
         Ok(String::from("ROM Loaded on memory"))
     }
@@ -178,7 +179,7 @@ impl Chip {
     pub fn run(&mut self) -> Result<(), io::Error> {
         while self.keep_running {
             if !self.waiting_key {
-                self.keep_running = self.keypad.handle_events(&mut self.rate, &mut self.ipf);
+                self.keep_running = self.keypad.handle_events(&mut self.config);
             }
 
             if self.sound_reg > 0 {
@@ -192,12 +193,17 @@ impl Chip {
                 self.delay_reg -= 1;
             }
 
-            for _ in 0..self.ipf {
+            for _ in 0..self.config.ipf {
                 self.update();
+                if self.config.vblank && self.drew_on_frame {
+                    break;
+                }
             }
 
+            self.drew_on_frame = false;
+
             self.display.render();
-            sleep(Duration::from_millis(1000 / self.rate));
+            sleep(Duration::from_millis(1000 / self.config.rate));
         }
         Ok(())
     }
@@ -229,12 +235,12 @@ impl Chip {
             (0x8, _, _, 0x3) => self.xor_reg_reg(instruction.x, instruction.y),
             (0x8, _, _, 0x4) => self.add_reg_reg(instruction.x, instruction.y),
             (0x8, _, _, 0x5) => self.sub_reg_reg(instruction.x, instruction.y),
-            (0x8, _, _, 0x6) => self.shift_right(instruction.x),
+            (0x8, _, _, 0x6) => self.shift_right(instruction.x, instruction.y),
             (0x8, _, _, 0x7) => self.subn_reg_reg(instruction.x, instruction.y),
-            (0x8, _, _, 0xE) => self.shift_left(instruction.x),
+            (0x8, _, _, 0xE) => self.shift_left(instruction.x, instruction.y),
             (0x9, _, _, 0x0) => self.skip_if_not_equal_registers(instruction.x, instruction.y),
             (0xA, _, _, _) => self.load_to_i_reg(instruction.nnn),
-            (0xB, _, _, _) => self.jump_with_offset(instruction.nnn),
+            (0xB, _, _, _) => self.jump_with_offset(instruction.x, instruction.nnn),
             (0xC, _, _, _) => self.rand(instruction.x, instruction.kk),
             (0xD, _, _, _) => self.draw(instruction.x, instruction.y, instruction.n),
             (0xE, _, 0x9, 0xE) => self.skip_if_key(instruction.x),
@@ -340,7 +346,9 @@ impl Chip {
     // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx. A bitwise OR compares the corrseponding bits from two values, and if either bit is 1, then the same bit in the result is also 1. Otherwise, it is 0.
     fn or_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] |= self.regs[y as usize];
-        self.regs[0xF] = 0;
+        if self.config.logic {
+            self.regs[0xF] = 0;
+        }
     }
 
     // 8xy2 - AND Vx, Vy
@@ -348,7 +356,9 @@ impl Chip {
     // Performs a bitwise AND on the values of Vx and Vy, then stores the result in Vx. A bitwise AND compares the corrseponding bits from two values, and if both bits are 1, then the same bit in the result is also 1. Otherwise, it is 0.
     fn and_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] &= self.regs[y as usize];
-        self.regs[0xF] = 0;
+        if self.config.logic {
+            self.regs[0xF] = 0;
+        }
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -356,7 +366,9 @@ impl Chip {
     // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. An exclusive OR compares the corrseponding bits from two values, and if the bits are not both the same, then the corresponding bit in the result is set to 1. Otherwise, it is 0.
     fn xor_reg_reg(&mut self, x: u8, y: u8) {
         self.regs[x as usize] ^= self.regs[y as usize];
-        self.regs[0xF] = 0;
+        if self.config.logic {
+            self.regs[0xF] = 0;
+        }
     }
 
     // 8xy4 - ADD Vx, Vy
@@ -380,9 +392,10 @@ impl Chip {
     // 8xy6 - SHR Vx {, Vy}
     // Set Vx = Vx SHR 1.
     // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0. Then Vx is divided by 2.
-    fn shift_right(&mut self, x: u8) {
-        let lsb = self.regs[x as usize] & 0x1;
-        self.regs[x as usize] = self.regs[x as usize].checked_shr(1).unwrap_or(0);
+    fn shift_right(&mut self, x: u8, y: u8) {
+        let source = if self.config.shift { x } else { y };
+        let lsb = self.regs[source as usize] & 0x1;
+        self.regs[x as usize] = self.regs[source as usize].checked_shr(1).unwrap_or(0);
         self.regs[0xF] = lsb;
     }
 
@@ -398,9 +411,10 @@ impl Chip {
     // 8xyE - SHL Vx {, Vy}
     // Set Vx = Vx SHL 1.
     // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
-    fn shift_left(&mut self, x: u8) {
-        let msb = self.regs[x as usize].checked_shr(7).unwrap_or(0);
-        self.regs[x as usize] = self.regs[x as usize].checked_shl(1).unwrap_or(0);
+    fn shift_left(&mut self, x: u8, y: u8) {
+        let source = if self.config.shift { x } else { y };
+        let msb = self.regs[source as usize].checked_shr(7).unwrap_or(0);
+        self.regs[x as usize] = self.regs[source as usize].checked_shl(1).unwrap_or(0);
         self.regs[0xF] = msb;
     }
 
@@ -423,8 +437,9 @@ impl Chip {
     // Bnnn - JP V0, addr
     // Jump to location nnn + V0.
     // The program counter is set to nnn plus the value of V0.
-    fn jump_with_offset(&mut self, addr: u16) {
-        self.pc_reg = addr as usize + self.regs[0] as usize;
+    fn jump_with_offset(&mut self, x: u8, addr: u16) {
+        self.pc_reg =
+            addr as usize + self.regs[if self.config.jump { x } else { 0 } as usize] as usize;
     }
 
     // Cxkk - RND Vx, byte
@@ -438,12 +453,19 @@ impl Chip {
     // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     // The interpreter reads n bytes from memory, starting at the address stored in I. These bytes are then displayed as sprites on screen at coordinates (Vx, Vy). Sprites are XORed onto the existing screen. If this causes any pixels to be erased, VF is set to 1, otherwise it is set to 0. If the sprite is positioned so part of it is outside the coordinates of the display, it wraps around to the opposite side of the screen. See instruction 8xy3 for more information on XOR, and section 2.4, Display, for more information on the Chip-8 screen and sprites.
     fn draw(&mut self, x: u8, y: u8, n: u8) {
+        self.drew_on_frame = true;
         let mut collision = 0;
+
+        // independent of wrap quirk on or off (this would do the trick to draw the sprite if it's entirely off the screen with wrap off)
+        let dx = self.regs[x as usize] as usize % Display::WIDTH;
+        let dy = self.regs[y as usize] as usize % Display::HEIGHT;
+
         for i in 0..n {
             if self.display.draw(
-                self.regs[x as usize],
-                self.regs[y as usize] + i,
+                dx as u8,
+                dy as u8 + i,
                 self.ram[self.i_reg + i as usize],
+                self.config.wrap,
             ) {
                 collision = 1;
             }
@@ -483,9 +505,9 @@ impl Chip {
     // All execution stops until a key is pressed, then the value of that key is stored in Vx.
     fn wait_key(&mut self, x: u8) {
         self.waiting_key = true;
-        if let Some(key) =
-            self.keypad
-                .block_read(&mut self.keep_running, &mut self.rate, &mut self.ipf)
+        if let Some(key) = self
+            .keypad
+            .block_read(&mut self.keep_running, &mut self.config)
         {
             self.regs[x as usize] = key as u8;
             self.waiting_key = false;
@@ -539,6 +561,15 @@ impl Chip {
         for i in 0..=x {
             self.ram[self.i_reg + i as usize] = self.regs[i as usize]
         }
+
+        if self.config.memory_leave_i_unchanged {
+            return;
+        }
+
+        self.i_reg += x as usize;
+        if !self.config.memory_increment_by_x {
+            self.i_reg += 1;
+        }
     }
 
     // Fx65 - LD Vx, [I]
@@ -547,6 +578,15 @@ impl Chip {
     fn read_regs_from_mem(&mut self, x: u8) {
         for i in 0..=x {
             self.regs[i as usize] = self.ram[self.i_reg + i as usize];
+        }
+
+        if self.config.memory_leave_i_unchanged {
+            return;
+        }
+
+        self.i_reg += x as usize;
+        if !self.config.memory_increment_by_x {
+            self.i_reg += 1;
         }
     }
 }
