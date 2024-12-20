@@ -35,7 +35,6 @@ impl Config {
 
     pub fn adjust_to_rom(&mut self, rom: &Vec<u8>) {
         if let Some(platform) = self.get_platform(&rom) {
-            println!("{}", platform);
             let quirks = match &*platform {
                 "originalChip8" | "hybridVIP" | "chip8x" => {
                     (false, false, false, false, false, true, true)
@@ -74,8 +73,6 @@ impl Config {
         let hashes: Value = serde_json::from_str(&data).ok()?;
 
         let program_index = hashes.get(&hash)?.as_u64()? as usize;
-
-        println!("{}", program_index);
 
         let data = fs::read_to_string("./db/programs.json").ok()?;
         let programs: Value = serde_json::from_str(&data).ok()?;
